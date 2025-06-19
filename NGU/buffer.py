@@ -10,19 +10,23 @@ class FastReplayBuffer:
         self.obs = np.zeros((size, obs_dim), dtype=np.float32)
         self.nextobs = np.zeros_like(self.obs)
         self.actions = np.zeros(size, dtype=np.int64)
-        self.rewards = np.zeros(size, dtype=np.float32)
+        self.rewards_ext = np.zeros(size, dtype=np.float32)
+        self.rewards_int = np.zeros(size, dtype=np.float32)
         self.dones = np.zeros(size, dtype=np.float32)
+        self.betas = np.zeros(size, dtype=np.float32)
 
         ## Puntero de inserción y bandera para saber si se llenó
         self.pos = 0
         self.full = False
 
-    def add(self, state, action, reward, next_state, done):
+    def add(self, state, action, reward_ext, reward_int, next_state, done, beta):
         self.obs[self.pos] = state
         self.nextobs[self.pos] = next_state
         self.actions[self.pos] = action
-        self.rewards[self.pos] = reward
+        self.rewards_ext[self.pos] = reward_ext
+        self.rewards_int[self.pos] = reward_int
         self.dones[self.pos] = done
+        self.betas[self.pos] = beta
 
         ## Avanza la posición en el buffer (circularmente) y marca como lleno si dio la vuelta
         self.pos = (self.pos + 1) % self.size
@@ -34,11 +38,18 @@ class FastReplayBuffer:
 
         states = torch.tensor(self.obs[indexes], dtype=torch.float32, device=self.device)
         actions = torch.tensor(self.actions[indexes], device=self.device)
-        rewards = torch.tensor(self.rewards[indexes], dtype=torch.float32, device=self.device)
+        rewards_ext = torch.tensor(self.rewards_ext[indexes], dtype=torch.float32, device=self.device)
+        rewards_int = torch.tensor(self.rewards_int[indexes], dtype=torch.float32, device=self.device)
         next_states = torch.tensor(self.nextobs[indexes], dtype=torch.float32, device=self.device)
         dones = torch.tensor(self.dones[indexes],   dtype=torch.float32, device=self.device)
+        betas = torch.tensor(self.betas[indexes], dtype=torch.float32, device=self.device)
         
-        return states, actions, rewards, next_states, dones
+        return states, actions, rewards_ext, rewards_int, next_states, dones, betas
+
+    def sample_observations(self, batch_size):
+        limit = self.size if self.full else self.pos
+        indexes = np.random.randint(0, limit, size=batch_size)
+        return torch.tensor(self.obs[indexes], dtype=torch.float32, device=self.device)
 
     def __len__(self):
         return self.size if self.full else self.pos

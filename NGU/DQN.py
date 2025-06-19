@@ -10,6 +10,8 @@ from .MLP import MLP
 from .buffer import FastReplayBuffer
 from .embedding_net import EmbeddingNet
 from .episodic_memory import EpisodicMemory
+from .inverse_dynamic import InverseDynamicsModel
+from .MLP_RND import RND
 
 class DQN:
     def __init__(self,
@@ -29,7 +31,7 @@ class DQN:
             max_grad_norm = 10,
             verbose = 0,
             enable_ngu = False, 
-            intrinsic_coef = 1.0
+            beta_candidates = [0.0, 0.3, 1.0]
         ):
         
         ## Ambiente, dimensiones del estado y espacio de acciones
@@ -40,8 +42,9 @@ class DQN:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         ## Política online y política target
-        self.policy = MLP(self.obs_dim, self.n_actions).to(self.device)
-        self.target_policy = MLP(self.obs_dim, self.n_actions, orthogonal_init = False).to(self.device)
+        self.beta_dim = 1
+        self.policy = MLP(self.obs_dim + self.beta_dim, self.n_actions).to(self.device)
+        self.target_policy = MLP(self.obs_dim + self.beta_dim, self.n_actions, orthogonal_init = False).to(self.device)
         self.target_policy.load_state_dict(self.policy.state_dict())
 
         ## Optimizador del MLP
@@ -82,11 +85,21 @@ class DQN:
 
         # Parámetros NGU
         self.enable_ngu = enable_ngu
-        self.intrinsic_coef = intrinsic_coef
         if self.enable_ngu:
             # Creamos la red de embedding y la memoria episódica
             self.embedding_net = EmbeddingNet(self.obs_dim, embed_dim=64).to(self.device)
             self.memory = EpisodicMemory()
+
+            self.embedding_optimizer = optim.Adam(self.embedding_net.parameters(), lr=1e-3)
+            self.inverse_dynamics = InverseDynamicsModel(embed_dim=64, n_actions=self.n_actions).to(self.device)
+            self.inverse_optimizer = optim.Adam(self.inverse_dynamics.parameters(), lr=1e-3)
+            self.ce_loss = nn.CrossEntropyLoss()
+
+            self.rnd = RND(input_dim=self.obs_dim, device=self.device)
+
+            self.beta_candidates = beta_candidates
+            self.current_beta = random.choice(self.beta_candidates)
+
 
     def learn(self, total_timesteps, log_interval=1000):
         self.learn_info = {
@@ -100,7 +113,8 @@ class DQN:
         state, _ = self.env.reset()
         if self.enable_ngu:
             self.memory.reset()
-    
+            self.current_beta = random.choice(self.beta_candidates)
+
         for timestep in range(1, total_timesteps + 1):
             ## Progreso para calcular el decaimiento del epsilon
             progress = timestep / total_timesteps
@@ -111,22 +125,22 @@ class DQN:
             next_state, reward_ext, terminated, truncated, info = self.env.step(action)
             done = terminated or truncated
 
-            if self.enable_ngu:
-                ## Obtenemos el embedding del siguiente estado (modo evaluación, sin gradientes)
-                state_tensor = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0).to(self.device)
-                with torch.no_grad():
-                    embed_tensor = self.embedding_net(state_tensor).squeeze(0).cpu().numpy()
+            ## Obtenemos el embedding del siguiente estado (modo evaluación, sin gradientes)
+            state_tensor = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0).to(self.device)
+            with torch.no_grad():
+                embed_tensor = self.embedding_net(state_tensor).squeeze(0).cpu().numpy()
 
-                ## Calculamos novedad y añadimos a la memoria
-                intrinsic = self.memory.get_intrinsic_reward(embed_tensor)
-                self.memory.add(embed_tensor)
+            ## Calculamos novedad y añadimos a la memoria
+            intrinsic = self.memory.get_intrinsic_reward(embed_tensor)
+            self.memory.add(embed_tensor)
 
-                ## Combinamos recompensa extrínseca e intrínseca
-                total_reward = reward_ext + self.intrinsic_coef * intrinsic
-            else:
-                total_reward = reward_ext
-        
-            self.replay_buffer.add(state, action, total_reward, next_state, float(done))
+            ## Combinamos recompensa extrínseca e intrínseca
+            episodic_reward = reward_ext + self.current_beta * intrinsic
+
+            with torch.no_grad():
+                total_reward = self.rnd.modulate_reward(torch.tensor([episodic_reward], device=self.device), state_tensor).item()
+
+            self.replay_buffer.add(state, action, reward_ext, intrinsic, next_state, float(done), self.current_beta)
 
             state = next_state
 
@@ -155,7 +169,7 @@ class DQN:
                 self.learn_info["ep_count"] += 1
                 self.learn_info["episode_reward"] = 0
 
-                if self.verbose and self.uses_monitor and self.learn_info["ep_count"] % log_interval == 0:
+                if (self.verbose and self.uses_monitor and self.learn_info["ep_count"] % log_interval == 0) or timestep == total_timesteps:
                     self.print_learn_info(timestep)
 
     ## Método para seleccionar acción con epsilon greedy
@@ -163,9 +177,12 @@ class DQN:
         if random.random() < self.epsilon:
             return self.env.action_space.sample()
         else:
+            beta_tensor = torch.tensor([[self.current_beta]], dtype=torch.float32).to(self.device)
             state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
+            input_tensor = torch.cat([state_tensor, beta_tensor], dim=1)
+
             with torch.no_grad():
-                q_values = self.policy(state_tensor)
+                q_values = self.policy(input_tensor)
 
             ## Se elige la acción greedy
             return q_values.argmax(dim=1).item()
@@ -181,27 +198,48 @@ class DQN:
         ## Típico entrenamiento de DL
         for _ in range(self.gradient_steps):
             ## Obtener batch
-            states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
+            states, actions, rewards_ext, rewards_int, next_states, dones, beta_batch = self.replay_buffer.sample(self.batch_size)
             states = states.to(self.device)
             actions = actions.to(self.device)
-            rewards = rewards.to(self.device)
+            rewards_ext = rewards_ext.to(self.device)
+            rewards_int = rewards_int.to(self.device)
             next_states = next_states.to(self.device)
             dones = dones.to(self.device)
+            beta_tensor = beta_batch.to(self.device).unsqueeze(1)
+
+            emb_s = self.embedding_net(states)
+            emb_next = self.embedding_net(next_states)
+
+            logits = self.inverse_dynamics(emb_s, emb_next)
+            inverse_loss = self.ce_loss(logits, actions)
+
+            # Optimizar embedding + modelo inverso
+            self.embedding_optimizer.zero_grad()
+            self.inverse_optimizer.zero_grad()
+            inverse_loss.backward()
+            self.embedding_optimizer.step()
+            self.inverse_optimizer.step()
+
+            self.optimizer.zero_grad()
+
+            states_ext = torch.cat([states, beta_tensor], dim=1)
+            next_states_ext = torch.cat([next_states, beta_tensor], dim=1)
+            rewards_beta = rewards_ext + beta_tensor.squeeze(1) * rewards_int
 
             ## Calcular q values
-            q_values = self.policy(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+            q_values = self.policy(states_ext).gather(1, actions.unsqueeze(1)).squeeze(1)
 
             with torch.no_grad():
                 ## Inferir siguientes q values y calcular expected q
-                next_q_values = self.target_policy(next_states).max(dim=1)[0]
-                expected_q = rewards + self.gamma * next_q_values * (1 - dones)
+                next_q_values = self.target_policy(next_states_ext).max(dim=1)[0]
+                expected_q = rewards_beta + self.gamma * next_q_values * (1 - dones)
 
             ## Pérdida de la red
             loss = F.smooth_l1_loss(q_values, expected_q)
+
             self.last_loss = loss.item()
 
             ## Optimización y back propagation
-            self.optimizer.zero_grad()
             loss.backward()
 
             ## Clipeo del gradiente por si acaso
@@ -209,6 +247,12 @@ class DQN:
 
             self.optimizer.step()
             self.num_updates += 1
+
+            if self.enable_ngu:
+                # Entrenar RND predictor
+                with torch.no_grad():
+                    obs_batch = self.replay_buffer.sample_observations(self.batch_size)
+                rnd_loss = self.rnd.update(obs_batch.to(self.device))
 
     def _update_target_network(self):
         if self.num_updates == 0:

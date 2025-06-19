@@ -6,8 +6,8 @@ import time
 import random
 from torch.nn import functional as F
 from collections import deque
-from MLP import MLP
-from buffer import FastReplayBuffer
+from .MLP import MLP
+from .buffer import FastReplayBuffer
 
 class DQN:
     def __init__(self,

@@ -1,10 +1,11 @@
 import torch.nn as nn
 
 class MLP(nn.Module):
-    def __init__(self, input_dim, output_dim, hidden_dim=128, orthogonal_init = True):
+    def __init__(self, input_dim, output_dim, hidden_dim = 128, extra_input_dim = 0, orthogonal_init = True):
         super().__init__()
+        total_input = input_dim + extra_input_dim
         self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+            nn.Linear(total_input, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
