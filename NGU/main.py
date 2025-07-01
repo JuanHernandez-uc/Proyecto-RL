@@ -1,5 +1,5 @@
 import gymnasium as gym
-from DQN import DQN
+from NGU.DQN import DQN
 from stable_baselines3.common.monitor import Monitor
 import copy
 

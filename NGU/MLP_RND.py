@@ -76,7 +76,11 @@ class RND:
         return rnd_error, torch.tensor(alpha, dtype=torch.float32, device=self.device)
 
     def modulate_reward(self, episodic_reward, obs_tensor):
-        _, alpha = self.compute_alpha_and_rnd(obs_tensor)
+        if self.reward_rms.count < 20:
+            alpha = torch.tensor([1.0], device=self.device)
+        else:
+            _, alpha = self.compute_alpha_and_rnd(obs_tensor)
+
         return episodic_reward * alpha
 
     def update(self, obs_tensor):
