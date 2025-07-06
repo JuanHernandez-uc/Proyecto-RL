@@ -84,6 +84,11 @@ class NGUMultiAgent:
                 self._print_log(t)
                 self.last_logged_ep = self.ep_count
 
+    def share_replay_buffer(self, source_agent_name):
+        shared_buffer = self.agent_dict[source_agent_name].replay_buffer
+        for name in self.agent_dict:
+            self.agent_dict[name].replay_buffer = shared_buffer
+
     def _print_log(self, t):
         fps = int(t / (time.perf_counter() - self.start_time))
         print("----------------------------------")
