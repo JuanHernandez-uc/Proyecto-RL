@@ -41,7 +41,7 @@ class DQN:
         # self.obs_dim = env.observation_space("adversary_0").shape[0]
         # self.n_actions = env.action_space("adversary_0").n
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 
         ## Política online y política target
         self.policy = MLP(self.obs_dim, self.n_actions).to(self.device)
@@ -264,16 +264,16 @@ class DQN:
         fps = int(timestep / (time.perf_counter() - self.learn_info["start_time"]))
         print("-" * 32)
         print(f"| rollout/            | {'':<6} |")
-        print(f"|    ep_len_mean      | {np.mean(self.learn_info["ep_lens"]) if self.learn_info["ep_lens"] else float('nan'):<6.0f} |")
-        print(f"|    ep_rew_mean      | {np.mean(self.learn_info["ep_rews"]) if self.learn_info["ep_rews"] else float('nan'):<6.0f} |")
+        print(f"|    ep_len_mean      | {np.mean(self.learn_info['ep_lens']) if self.learn_info['ep_lens'] else float('nan'):<6.0f} |")
+        print(f"|    ep_rew_mean      | {np.mean(self.learn_info['ep_rews']) if self.learn_info['ep_rews'] else float('nan'):<6.0f} |")
         print(f"|    exploration_rate | {self.epsilon:<6.3f} |")
         print(f"| time/               | {'':<6} |")
-        print(f"|    episodes         | {self.learn_info["ep_count"]:<6} | ")
+        print(f"|    episodes         | {self.learn_info['ep_count']:<6} | ")
         print(f"|    fps              | {fps:<6} |")
-        print(f"|    time_elapsed     | {int(time.perf_counter() - self.learn_info["start_time"]):<6.0f} |")
+        print(f"|    time_elapsed     | {int(time.perf_counter() - self.learn_info['start_time']):<6.0f} |")
         print(f"|    total_timesteps  | {timestep:<6} |")
         print(f"| train/              | {'':<6} |")
         print(f"|    learning_rate    | {self.learning_rate:<6.3g} |")
-        print(f"|    loss             | {self.last_loss if self.last_loss is not None else float("nan"):<6.4f} |")
+        print(f"|    loss             | {self.last_loss if self.last_loss is not None else float('nan'):<6.4f} |")
         print(f"|    n_updates        | {self.num_updates:<6} |")
         print("-" * 32)
