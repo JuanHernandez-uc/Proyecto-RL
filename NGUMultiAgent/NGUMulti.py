@@ -1,6 +1,7 @@
 import time
 import numpy as np
 import torch
+import pandas as pd
 import matplotlib.pyplot as plt
 import imageio
 from PIL import Image
@@ -123,6 +124,23 @@ class NGUMultiAgent:
         plt.legend()
         plt.grid(True)
         plt.show()
+
+    def save_rewards_to_csv(self, filename="rewards.csv"):
+        cleaned_log = []
+
+        for ep_idx, ep in enumerate(self.episode_rewards_log):
+            row = {"episode": ep_idx}
+
+            for agent, value in ep.items():
+                if torch.is_tensor(value):
+                    value = value.cpu().item()
+                row[agent] = value
+
+            cleaned_log.append(row)
+
+        # Crear DataFrame
+        df = pd.DataFrame(cleaned_log)
+        df.to_csv(filename, index=False)
 
     def evaluate(self, episodes=5):
         rewards = []
