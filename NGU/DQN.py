@@ -12,6 +12,7 @@ from .embedding_net import EmbeddingNet
 from .episodic_memory import EpisodicMemory
 from .inverse_dynamic import InverseDynamicsModel
 from .MLP_RND import RND
+from .projection import ProjectionHead
 
 class DQN:
     def __init__(self,
@@ -86,9 +87,14 @@ class DQN:
 
         # Creamos la red de embedding y la memoria episódica
         self.embedding_net = EmbeddingNet(self.obs_dim, embed_dim=64).to(self.device)
+        self.proj_head = ProjectionHead(in_dim=64, proj_dim=128).to(self.device)
         self.memory = EpisodicMemory()
 
-        self.embedding_optimizer = optim.Adam(self.embedding_net.parameters(), lr=1e-3)
+        self.embedding_optimizer = optim.Adam(
+            list(self.embedding_net.parameters()) + list(self.proj_head.parameters()),
+            lr=1e-3
+        )
+
         self.inverse_dynamics = InverseDynamicsModel(embed_dim=64, n_actions=self.n_actions).to(self.device)
         self.inverse_optimizer = optim.Adam(self.inverse_dynamics.parameters(), lr=1e-3)
         self.ce_loss = nn.CrossEntropyLoss()
@@ -96,6 +102,13 @@ class DQN:
         # self.rnd = RND(input_dim=self.obs_dim, device=self.device)
 
         self.beta = beta
+
+    def embed_and_project(self, obs_np):
+        obs_t = torch.tensor(obs_np, dtype=torch.float32, device=self.device).unsqueeze(0)
+        with torch.no_grad():
+            e = self.embedding_net(obs_t).squeeze(0)          # [64]
+            z = self.proj_head(e).squeeze(0)                  # [128], ya normalizado
+        return e, z
 
 
     def learn(self, total_timesteps, log_interval=1000):
